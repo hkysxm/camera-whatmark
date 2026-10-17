@@ -1,0 +1,17 @@
+PASS startup and real sample dimensions
+PASS invalid RAW rejects without sample substitution
+PASS missing EXIF stays unknown
+PASS HTML values and untrusted keys remain text; colon-key removable
+PASS sync custom text and author
+PASS preset controls match config
+  metadata {"Make":"相机品牌","Model":"中文型号","Lens":"中文镜头","creator":"摄影师 王","rights":{"lang":"x-default","value":"© 中文版权"},"ExposureTime":0.00125,"FNumber":2.8,"ISO":400,"GPSLatitudeRef":"S","GPSLatitude":[33,51,0],"GPSLongitudeRef":"E","GPSLongitude":[151,12,0],"latitude":-33.85,"longitude":151.2}
+PASS JPEG real GPS, shutter, unicode metadata and real verification
+PASS max2048 includes frame and estimate agrees
+PASS HEIC blocked with no false success
+PASS export ignores original comparison mode
+PASS metadata write failures shown and no success panel
+PASS embedded RAW JPEG chooses greatest pixel dimensions
+PASS custom logo uses actual measured width
+PASS rounded photo shadow drawn outside clip
+PASS Python script exports current settings
+ALL PASSED
