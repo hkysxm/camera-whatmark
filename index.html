@@ -5372,53 +5372,165 @@ X.B(E,Y);return E}return J}())
       return `${toDms(lat, 'N', 'S')} ${toDms(lon, 'E', 'W')}`;
     }
 
-    function extractEmbeddedJpegFromRawBuffer(arrayBuffer) {
-      // Parse JPEG marker lengths, including APP segments and entropy-coded scans.
-      // Select by decoded SOF pixel dimensions, never by an arbitrary byte threshold.
-      const b = new Uint8Array(arrayBuffer); let best = null;
-      for (let start=0; start<b.length-4; start++) {
-        if (b[start]!==255 || b[start+1]!==216) continue;
-        let p=start+2, w=0, h=0, end=0;
-        while (p<b.length-1) {
-          if (b[p++]!==255) continue;
-          while (b[p]===255) p++;
-          const m=b[p++];
-          if (m===0 || (m>=208 && m<=215) || m===1) continue;
-          if (m===217) { end=p; break; }
-          if (m===216 || p+1>=b.length) break;
-          const len=(b[p]<<8)|b[p+1]; if(len<2 || p+len>b.length) break;
-          if ([192,193,194,195,197,198,199,201,202,203,205,206,207].includes(m) && len>=8) {
-            h=(b[p+3]<<8)|b[p+4]; w=(b[p+5]<<8)|b[p+6];
+    function findEmbeddedJpegs(arrayBuffer) {
+      const bytes = new Uint8Array(arrayBuffer), candidates = [];
+      for (let start = 0; start < bytes.length - 4; start++) {
+        if (bytes[start] !== 255 || bytes[start + 1] !== 216 || bytes[start + 2] !== 255) continue;
+        let p = start + 2, width = 0, height = 0, scan = false, entropy = false, scanBytes = 0;
+        const quantTables = new Set(), requiredTables = new Set();
+        while (p < bytes.length - 1) {
+          if (entropy) {
+            while (p < bytes.length - 1 && bytes[p] !== 255) { p++; scanBytes++; }
+            if (bytes[p + 1] === 0 || (bytes[p + 1] >= 208 && bytes[p + 1] <= 215)) { p += 2; continue; }
+            entropy = false;
           }
-          p+=len;
+          // Outside a scan every segment must start with a marker. Never scan arbitrary RAW bytes as JPEG headers.
+          if (bytes[p++] !== 255) break;
+          while (bytes[p] === 255) p++;
+          const marker = bytes[p++];
+          if (marker === 217) {
+            if (scan && scanBytes > 0 && width && height) candidates.push({start, end: p, width, height});
+            break;
+          }
+          if (marker === 216 || marker === 0 || (marker >= 208 && marker <= 215) || p + 1 >= bytes.length) break;
+          if (marker === 1) continue;
+          const length = (bytes[p] << 8) | bytes[p + 1];
+          if (length < 2 || p + length > bytes.length) break;
+          if (marker === 219) {
+            let q = p + 2;
+            while (q < p + length) {
+              const info = bytes[q++], precision = info >> 4, table = info & 15;
+              if (precision > 1 || table > 3 || q + 64 * (precision + 1) > p + length) break;
+              quantTables.add(table); q += 64 * (precision + 1);
+            }
+            if (q !== p + length) break;
+          }
+          if (marker >= 192 && marker <= 207 && ![196, 200, 204].includes(marker)) {
+            // Browsers decode 8-bit baseline/extended/progressive JPEG, not lossless RAW JPEG frames.
+            if (![192, 193, 194].includes(marker) || length < 11 || bytes[p + 2] !== 8) break;
+            const components = bytes[p + 7];
+            if (![1, 3, 4].includes(components) || length !== 8 + components * 3) break;
+            for (let component = 0; component < components; component++) requiredTables.add(bytes[p + 10 + component * 3]);
+            height = (bytes[p + 3] << 8) | bytes[p + 4]; width = (bytes[p + 5] << 8) | bytes[p + 6];
+          }
+          if (marker === 218) {
+            if (!width || !height || !quantTables.size || [...requiredTables].some(table => !quantTables.has(table)) || length < 6 || length !== 6 + bytes[p + 2] * 2) break;
+            scan = true; entropy = true;
+          }
+          p += length;
         }
-        if(end && w && h && (!best || w*h>best.area)) best={start,end,area:w*h};
       }
-      return best ? new Blob([b.subarray(best.start,best.end)],{type:'image/jpeg'}) : null;
+      return candidates.sort((a, b) => b.width * b.height - a.width * a.height);
+    }
+
+    function extractEmbeddedJpegFromRawBuffer(arrayBuffer) {
+      const first = findEmbeddedJpegs(arrayBuffer)[0];
+      return first ? new Blob([new Uint8Array(arrayBuffer, first.start, first.end - first.start)], {type: 'image/jpeg'}) : null;
+    }
+
+    async function loadImageBlob(blob) {
+      const url = objectUrl(blob);
+      try { return await loadImage(url); } finally { releaseUrl(url); }
     }
 
     function decodeTiffOrDngWithUtif(arrayBuffer) {
       try {
         if (!window.UTIF) return null;
-        const ifds = UTIF.decode(arrayBuffer);
-        if (!ifds || ifds.length === 0) return null;
-        let targetIfd = ifds[0];
+        const bytes = new Uint8Array(arrayBuffer);
+        if (!((bytes[0] === 73 && bytes[1] === 73 && bytes[2] === 42) || (bytes[0] === 77 && bytes[1] === 77 && bytes[3] === 42))) return null;
+        const collect = ifds => ifds.flatMap(ifd => [ifd, ...collect(ifd.subIFD || [])]);
+        const ifds = collect(UTIF.decode(arrayBuffer)).filter(ifd => [0, 1, 2, 3, 5, 6].includes(ifd.t262?.[0]));
+        ifds.sort((a, b) => (b.t256?.[0] || 0) * (b.t257?.[0] || 0) - (a.t256?.[0] || 0) * (a.t257?.[0] || 0));
         for (const ifd of ifds) {
-          if (((ifd.t256?.[0] || ifd.width || 0) * (ifd.t257?.[0] || ifd.height || 0)) > ((targetIfd.t256?.[0] || targetIfd.width || 0) * (targetIfd.t257?.[0] || targetIfd.height || 0))) targetIfd = ifd;
+          try {
+            UTIF.decodeImage(arrayBuffer, ifd);
+            if (!ifd.width || !ifd.height || !ifd.data?.length) continue;
+            const rgba = UTIF.toRGBA8(ifd);
+            if (rgba.length !== ifd.width * ifd.height * 4) continue;
+            const canvas = document.createElement('canvas'); canvas.width = ifd.width; canvas.height = ifd.height;
+            const ctx = canvas.getContext('2d'), data = ctx.createImageData(canvas.width, canvas.height);
+            data.data.set(rgba); ctx.putImageData(data, 0, 0);
+            return canvas.toDataURL('image/png');
+          } catch (_) { /* Try another RGB preview; CFA sensor data is intentionally excluded. */ }
         }
-        UTIF.decodeImage(arrayBuffer, targetIfd);
-        const rgba = UTIF.toRGBA8(targetIfd);
-        const c = document.createElement('canvas');
-        c.width = targetIfd.width;
-        c.height = targetIfd.height;
-        const ctx = c.getContext('2d');
-        const imgData = ctx.createImageData(c.width, c.height);
-        imgData.data.set(rgba);
-        ctx.putImageData(imgData, 0, 0);
-        return c.toDataURL('image/jpeg', 0.92);
-      } catch (e) {
-        return null;
+      } catch (_) {}
+      return null;
+    }
+
+    let heicDecoderPromise;
+    function loadHeicDecoder() {
+      if (typeof window.HeicTo === 'function') return Promise.resolve(window.HeicTo);
+      if (!heicDecoderPromise) heicDecoderPromise = new Promise((resolve, reject) => {
+        // heic-to 1.6.6 / libheif, LGPL-3.0: https://github.com/hoppergee/heic-to
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/heic-to@1.6.6/dist/iife/heic-to.js';
+        script.crossOrigin = 'anonymous';
+        script.integrity = 'sha384-ZUCbebcZz1ccUd6VJI4E3dszgWBQOaMQYQ2Tfh7zp+LY0Wf15c9USciIQPWwXRSC';
+        const timer = setTimeout(() => fail(), 30000);
+        const fail = () => { clearTimeout(timer); script.remove(); heicDecoderPromise = undefined; reject(new Error('HEIC 解码器加载失败，请检查网络后重试。')); };
+        script.onload = () => { clearTimeout(timer); if (typeof window.HeicTo === 'function') resolve(window.HeicTo); else fail(); };
+        script.onerror = fail; document.head.appendChild(script);
+      });
+      return heicDecoderPromise;
+    }
+
+    async function decodeUploadedPhoto(file, buffer, isRaw, isHeic) {
+      if (isHeic) {
+        try { return {image: await loadImageBlob(file)}; } catch (_) {}
+        const decode = await loadHeicDecoder();
+        let blob;
+        try { blob = await decode({blob: file, type: 'image/png'}); }
+        catch (_) { throw new Error('HEIC/HEIF 解码失败：文件损坏或编码不受支持。'); }
+        return {image: await loadImageBlob(blob)};
       }
+      if (!isRaw) return {image: await loadImageBlob(file)};
+      const bytes = new Uint8Array(buffer);
+      for (const candidate of findEmbeddedJpegs(buffer)) {
+        const blob = new Blob([bytes.subarray(candidate.start, candidate.end)], {type: 'image/jpeg'});
+        try { return {image: await loadImageBlob(blob), metadataBlob: blob}; }
+        catch (_) { /* A structurally valid JPEG may still be corrupt. Try the next preview. */ }
+      }
+      const tiff = decodeTiffOrDngWithUtif(buffer);
+      if (tiff) return {image: await loadImage(tiff)};
+      throw new Error('此 RAW 没有浏览器可解码的预览图；请先用相机软件转换为 JPEG/TIFF。');
+    }
+
+    async function readCr3Metadata(buffer) {
+      // Canon stores TIFF IFDs in CMT1 (image), CMT2 (EXIF), and CMT4 (GPS) boxes.
+      const bytes = new Uint8Array(buffer), view = new DataView(buffer), result = {};
+      for (let p = 4; p + 12 <= bytes.length; p++) {
+        if (bytes[p] !== 67 || bytes[p + 1] !== 77 || bytes[p + 2] !== 84 || ![49, 50, 52].includes(bytes[p + 3])) continue;
+        const size = view.getUint32(p - 4);
+        if (size < 16 || p - 4 + size > bytes.length) continue;
+        let tiff = bytes.slice(p + 4, p - 4 + size);
+        const little = tiff[0] === 73 && tiff[1] === 73;
+        if (!little && !(tiff[0] === 77 && tiff[1] === 77)) continue;
+        const header = new DataView(tiff.buffer);
+        if (header.getUint16(2, little) !== 42) continue;
+        const offset = header.getUint32(4, little);
+        if (offset < 8 || offset + 2 > tiff.length) continue;
+        if (bytes[p + 3] !== 49) {
+          // Add a root pointer without relocating existing TIFF offsets.
+          const root = tiff.length + (tiff.length % 2), wrapped = new Uint8Array(root + 18);
+          wrapped.set(tiff); const data = new DataView(wrapped.buffer);
+          data.setUint32(4, root, little); data.setUint16(root, 1, little);
+          data.setUint16(root + 2, bytes[p + 3] === 50 ? 34665 : 34853, little);
+          data.setUint16(root + 4, 4, little); data.setUint32(root + 6, 1, little);
+          data.setUint32(root + 10, offset, little); tiff = wrapped;
+        }
+        try { Object.assign(result, await exifr.parse(tiff, {tiff: true, exif: true, gps: true}) || {}); } catch (_) {}
+        p += size - 5;
+      }
+      return result;
+    }
+
+    async function orientRawPreview(image, orientation) {
+      if (!(orientation >= 2 && orientation <= 8)) return image;
+      const w = image.naturalWidth, h = image.naturalHeight, canvas = document.createElement('canvas');
+      canvas.width = orientation >= 5 ? h : w; canvas.height = orientation >= 5 ? w : h;
+      const transforms = {2: [-1,0,0,1,w,0], 3: [-1,0,0,-1,w,h], 4: [1,0,0,-1,0,h], 5: [0,1,1,0,0,0], 6: [0,1,-1,0,h,0], 7: [0,-1,-1,0,h,w], 8: [0,-1,1,0,0,w]};
+      const ctx = canvas.getContext('2d'); ctx.setTransform(...transforms[orientation]); ctx.drawImage(image, 0, 0);
+      return loadImageBlob(await canvasBlob(canvas, 'image/png'));
     }
 
     async function handleFilesUpload(fileList) {
@@ -5429,9 +5541,13 @@ X.B(E,Y);return E}return J}())
         try {
         const ext = (file.name.split('.').pop() || '').toUpperCase();
         const isRaw = ['ARW', 'CR2', 'CR3', 'NEF', 'NRW', 'ORF', 'RAF', 'RW2', 'PEF', 'DNG', '3FR', 'IIQ', 'TIF', 'TIFF'].includes(ext);
-        const isHeic = ['HEIC', 'HEIF'].includes(ext);
+        let isHeic = ['HEIC', 'HEIF'].includes(ext) || /image\/hei[cf]/i.test(file.type);
 
         const buffer = await file.arrayBuffer();
+        const header = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 64));
+        if (String.fromCharCode(...header.subarray(4, 8)) === 'ftyp') {
+          for (let p = 8; p + 4 <= header.length; p += 4) if (['heic','heix','hevc','hevx','heim','heis','hevm','hevs','mif1','msf1'].includes(String.fromCharCode(...header.subarray(p, p + 4)))) isHeic = true;
+        }
         if (!window.exifr) throw new Error('EXIF 解析库未加载，请检查网络后重试。');
 
         // Parse ALL EXIF fields
@@ -5450,23 +5566,26 @@ X.B(E,Y);return E}return J}())
           }
         } catch (err) {
           parsedExif = {};
-          showToast(`未能读取 ${file.name} 的 EXIF，未知参数保持为空`, 'info');
+
         }
 
-        let imgSrcUrl = null;
-        if (isRaw || isHeic) {
-          const embeddedBlob = extractEmbeddedJpegFromRawBuffer(buffer);
-          if (embeddedBlob) imgSrcUrl = objectUrl(embeddedBlob);
-          else {
-            const utifUrl = decodeTiffOrDngWithUtif(buffer);
-            if (utifUrl) imgSrcUrl = utifUrl;
+        if (ext === 'CR3') parsedExif = {...await readCr3Metadata(buffer), ...parsedExif};
+        const decoded = await decodeUploadedPhoto(file, buffer, isRaw, isHeic);
+        let loadedImg = decoded.image;
+        if (decoded.metadataBlob) {
+          try {
+            const previewExif = await exifr.parse(await decoded.metadataBlob.arrayBuffer(), {tiff: true, exif: true, gps: true, xmp: true}) || {};
+            parsedExif = {...previewExif, ...parsedExif};
+          } catch (_) {}
+          // Native JPEG orientation has already been applied by the browser; avoid double rotation.
+          const previewOrientation = await exifr.orientation(await decoded.metadataBlob.arrayBuffer()).catch(() => undefined);
+          if (previewOrientation === undefined) {
+            const orientationNames = ['', 'Horizontal (normal)', 'Mirror horizontal', 'Rotate 180', 'Mirror vertical', 'Mirror horizontal and rotate 270 CW', 'Rotate 90 CW', 'Mirror horizontal and rotate 90 CW', 'Rotate 270 CW'];
+            const sourceOrientation = await exifr.orientation(buffer).catch(() => undefined) || (typeof parsedExif.Orientation === 'number' ? parsedExif.Orientation : orientationNames.indexOf(parsedExif.Orientation));
+            loadedImg = await orientRawPreview(loadedImg, sourceOrientation);
           }
         }
-        if (!imgSrcUrl) imgSrcUrl = objectUrl(file);
-
-        let loadedImg;
-        try { loadedImg = await loadImage(imgSrcUrl); }
-        finally { if (imgSrcUrl.startsWith('blob:')) releaseUrl(imgSrcUrl); }
+        if (!Object.keys(parsedExif).length) showToast(`未读取到 ${file.name} 的 EXIF，未知参数保持为空`, 'info');
         const w = loadedImg.naturalWidth, h = loadedImg.naturalHeight;
         const sourceW = parsedExif.ExifImageWidth || parsedExif.ImageWidth;
         const sourceH = parsedExif.ExifImageHeight || parsedExif.ImageHeight;
