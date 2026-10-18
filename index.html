@@ -3716,6 +3716,50 @@ X.B(E,Y);return E}return J}())
       background-position: 0 0, 0 9px, 9px -9px, -9px 0px;
     }
     input[type="range"] { accent-color: #f59e0b; }
+
+    /* Keep toolbar and queue controls inside their preview column. */
+    #canvas-toolbar, #queue-panel, body > header { flex-shrink: 0; }
+    #canvas-toolbar > div,
+    #queue-panel > div:first-child,
+    #queue-panel > div:first-child > div {
+      flex-wrap: wrap;
+      min-width: 0;
+      max-width: 100%;
+    }
+    #badge-file-format { max-width: 100%; overflow-wrap: anywhere; }
+    #canvas-stage { align-items: safe center; justify-content: safe center; }
+    #canvas-wrapper { flex-shrink: 0; }
+
+    /* Narrow or short screens use normal document flow, not shrinking panes. */
+    @media (max-width: 1023px), (max-height: 599px) {
+      html body.h-screen {
+        height: auto;
+        min-height: 100vh;
+        min-height: 100dvh;
+        overflow-y: auto;
+      }
+      #view-studio {
+        flex: none;
+        flex-direction: column;
+        height: auto;
+        overflow: visible;
+      }
+      #preview-pane { flex: none; width: 100%; height: auto; }
+      #canvas-stage {
+        flex: none;
+        height: clamp(260px, 55vh, 520px);
+        height: clamp(260px, 55svh, 520px);
+        min-height: 260px;
+      }
+      #right-sidebar {
+        width: 100%;
+        height: auto;
+        border-left-width: 0;
+        border-top-width: 1px;
+      }
+      #right-sidebar > div:last-child { flex: none; height: auto; overflow: visible; }
+      #view-exif { flex: none; overflow: visible; }
+    }
   </style>
 </head>
 <body class="h-screen min-h-screen flex flex-col bg-studio-950 text-slate-100 select-none overflow-x-hidden md:overflow-hidden">
@@ -3766,10 +3810,10 @@ X.B(E,Y);return E}return J}())
   <main id="view-studio" class="flex-1 min-h-0 h-full w-full flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
     
     <!-- Left Canvas & Queue Area -->
-    <div class="flex-1 flex flex-col min-w-0 min-h-0 md:h-full bg-studio-950">
+    <div id="preview-pane" class="flex-1 flex flex-col min-w-0 min-h-0 md:h-full bg-studio-950">
       
       <!-- Canvas Toolbar -->
-      <div class="px-3 py-1.5 bg-studio-900/70 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div id="canvas-toolbar" class="px-3 py-1.5 bg-studio-900/70 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
         <div class="flex items-center gap-2">
           <span id="badge-file-format" class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono text-[11px]">SONY JPEG</span>
           <span id="label-file-name" class="font-mono text-slate-200 truncate max-w-[180px]">DSC01761.JPG</span>
@@ -3823,7 +3867,7 @@ X.B(E,Y);return E}return J}())
       </div>
 
       <!-- Bottom Filmstrip Queue -->
-      <div class="bg-studio-900 border-t border-slate-800 px-3 py-2">
+      <div id="queue-panel" class="bg-studio-900 border-t border-slate-800 px-3 py-2">
         <div class="flex items-center justify-between mb-1.5">
           <div class="flex items-center gap-2">
             <span class="text-xs font-medium text-slate-300">图片队列</span>
