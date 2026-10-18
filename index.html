@@ -3729,6 +3729,11 @@ X.B(E,Y);return E}return J}())
     #badge-file-format { max-width: 100%; overflow-wrap: anywhere; }
     #canvas-stage { align-items: safe center; justify-content: safe center; }
     #canvas-wrapper { flex-shrink: 0; }
+    #watermark-hit-layer { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+    .watermark-hit-region { position: absolute; pointer-events: auto; touch-action: none; cursor: move; }
+    .queue-remove { min-width: 32px; min-height: 32px; border-radius: 4px; }
+    .queue-remove:hover { background: #7f1d1d; }
+    #btn-clear-queue:disabled { opacity: .45; cursor: default; }
 
     /* Narrow or short screens use normal document flow, not shrinking panes. */
     @media (max-width: 1023px), (max-height: 599px) {
@@ -3850,8 +3855,10 @@ X.B(E,Y);return E}return J}())
 
       <!-- Canvas Stage -->
       <div id="canvas-stage" class="flex-1 min-h-[360px] md:min-h-0 h-full w-full checkerboard relative overflow-auto flex items-center justify-center p-3 sm:p-4">
+        <p id="queue-empty-message" class="hidden text-sm text-slate-400">图片队列为空，请导入照片。</p>
         <div id="canvas-wrapper" class="relative inline-flex items-center justify-center shadow-2xl shadow-black/90">
-          <canvas id="watermark-canvas" class="block cursor-move" title="可直接拖拽调整水印在画面中的位置"></canvas>
+          <canvas id="watermark-canvas" class="block"></canvas>
+          <div id="watermark-hit-layer" aria-label="水印拖动区域"></div>
           <div id="grid-overlay" class="hidden pointer-events-none absolute inset-0 grid grid-cols-3 grid-rows-3 border border-amber-400/40">
             <div class="border-r border-b border-amber-400/25"></div>
             <div class="border-r border-b border-amber-400/25"></div>
@@ -3874,6 +3881,7 @@ X.B(E,Y);return E}return J}())
             <span id="queue-count-badge" class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-studio-800 text-amber-400">4</span>
           </div>
           <div class="flex items-center gap-1.5">
+            <button id="btn-clear-queue" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 text-slate-300 border border-slate-700">清空队列</button>
             <button id="btn-sync-all" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 hover:bg-studio-700 text-slate-300 border border-slate-700">
               同步版权和自定义文本
             </button>
@@ -4777,6 +4785,9 @@ X.B(E,Y);return E}return J}())
       zoomMode: 'fit',
       customLogoImg: null,
       isDraggingWatermark: false,
+      dragPointerId: null,
+      watermarkBounds: [],
+      dragArea: null,
       dragStartX: 0,
       dragStartY: 0,
       dominantColors: ['#1e293b', '#334155', '#475569', '#0f172a'],
@@ -4909,7 +4920,9 @@ X.B(E,Y);return E}return J}())
 
     function selectQueueItem(index) {
       if (index < 0 || index >= state.queue.length) return;
+      endWatermarkDrag();
       state.activeIndex = index;
+      setQueueAvailability(true);
       const item = state.queue[index];
 
       document.getElementById('badge-file-format').textContent = item.rawFormat;
@@ -5238,8 +5251,76 @@ X.B(E,Y);return E}return J}())
         `;
         card.appendChild(thumb);
         card.appendChild(info);
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'queue-remove'; remove.textContent = '×';
+        remove.setAttribute('aria-label', `删除 ${item.name}`);
+        remove.addEventListener('click', e => { e.stopPropagation(); removeQueueItem(idx); });
+        card.appendChild(remove);
         list.appendChild(card);
       });
+    }
+
+    function setQueueAvailability(available) {
+      document.getElementById('canvas-wrapper').style.display = available ? '' : 'none';
+      document.getElementById('queue-empty-message').classList.toggle('hidden', available);
+      for (const id of ['btn-export-main','btn-export-verify','btn-export-py','btn-batch-export','btn-sync-all','btn-clear-queue','btn-compare-orig']) document.getElementById(id).disabled = !available;
+      document.getElementById('export-verify-box').classList.add('hidden');
+    }
+
+    function refreshQueueAfterRemoval() {
+      endWatermarkDrag();
+      if (state.queue.length) { selectQueueItem(state.activeIndex); return; }
+      state.activeIndex = -1;
+      state.compareOriginal = false;
+      setQueueAvailability(false);
+      renderFilmstrip();
+      for (const id of ['exif-pool-list','exif-full-table-body','dominant-swatches']) document.getElementById(id).replaceChildren();
+      renderLinesComposer();
+      document.getElementById('label-file-name').textContent = '未选择照片';
+      document.getElementById('badge-file-format').textContent = '—';
+      document.getElementById('label-dimensions').textContent = '—';
+      document.getElementById('label-exif-count').textContent = '0 项 EXIF';
+      document.getElementById('label-est-size').textContent = '—';
+      document.getElementById('exif-view-file-label').textContent = '未选择照片';
+      document.getElementById('verify-exif-json').textContent = '';
+      document.getElementById('verify-file-size').textContent = '';
+      renderWatermarkCanvas();
+    }
+
+    function removeQueueItem(index) {
+      if (state.exportBusy || index < 0 || index >= state.queue.length) return;
+      state.queue.splice(index, 1);
+      if (index < state.activeIndex) state.activeIndex--;
+      else state.activeIndex = Math.min(state.activeIndex, state.queue.length - 1);
+      refreshQueueAfterRemoval();
+    }
+
+    function clearQueue() {
+      if (state.exportBusy) return;
+      state.queue.length = 0;
+      refreshQueueAfterRemoval();
+    }
+
+    function syncWatermarkHitRegions() {
+      const canvas = document.getElementById('watermark-canvas');
+      const layer = document.getElementById('watermark-hit-layer');
+      layer.replaceChildren();
+      for (const box of state.watermarkBounds) {
+        const x = Math.max(0, box.x), y = Math.max(0, box.y);
+        const w = Math.min(canvas.width, box.x + box.w) - x;
+        const h = Math.min(canvas.height, box.y + box.h) - y;
+        if (w <= 0 || h <= 0) continue;
+        const hit = document.createElement('div'); hit.className = 'watermark-hit-region';
+        hit.style.cssText = `left:${x / canvas.width * 100}%;top:${y / canvas.height * 100}%;width:${w / canvas.width * 100}%;height:${h / canvas.height * 100}%;`;
+        hit.title = '拖动水印'; layer.appendChild(hit);
+      }
+    }
+
+    function endWatermarkDrag(e) {
+      if (e && e.pointerId !== undefined && e.pointerId !== state.dragPointerId) return;
+      const layer = document.getElementById('watermark-hit-layer'), id = state.dragPointerId;
+      state.isDraggingWatermark = false; state.dragPointerId = null;
+      if (id !== null && layer.hasPointerCapture(id)) layer.releasePointerCapture(id);
     }
 
     // ==================== FULL EXIF & RAW FILE UPLOAD PARSER ====================
@@ -5586,7 +5667,12 @@ X.B(E,Y);return E}return J}())
 
     function renderWatermarkCanvas(targetScale = 1) {
       const item = state.queue[state.activeIndex];
-      if (!item || !item.image) return;
+      state.watermarkBounds = []; state.dragArea = null;
+      if (!item || !item.image) {
+        const canvas = document.getElementById('watermark-canvas');
+        canvas.width = 1; canvas.height = 1;
+        syncWatermarkHitRegions(); return;
+      }
 
       const canvas = document.getElementById('watermark-canvas');
       const ctx = canvas.getContext('2d');
@@ -5766,6 +5852,7 @@ X.B(E,Y);return E}return J}())
         const barTop = photoY + srcH;
         const barHeight = totalH - barTop;
         const barCenterY = barTop + barHeight / 2 + Math.round((c.offsetY / 100) * barHeight);
+        state.dragArea = {w: srcW, h: barHeight};
         const shiftX = Math.round((c.offsetX / 100) * srcW);
         const leftXBase = photoX + shiftX;
         const rightXBase = photoX + srcW + shiftX;
@@ -5791,6 +5878,10 @@ X.B(E,Y);return E}return J}())
         ctx.fillStyle = hexToRgba(c.textMainColor || '#f59e0b', c.textOpacity);
         if (line1Text) {
           ctx.fillText(line1Text, leftXBase, barCenterY - Math.round(4 * baseScale));
+          if (c.textOpacity > 0) {
+            const m = ctx.measureText(line1Text);
+            state.watermarkBounds.push({x: leftXBase - m.actualBoundingBoxLeft, y: barCenterY - Math.round(4 * baseScale) - m.actualBoundingBoxAscent, w: m.actualBoundingBoxLeft + m.actualBoundingBoxRight, h: m.actualBoundingBoxAscent + m.actualBoundingBoxDescent});
+          }
         }
 
         ctx.textBaseline = 'top';
@@ -5799,6 +5890,10 @@ X.B(E,Y);return E}return J}())
         ctx.fillStyle = hexToRgba(c.textSubColor || '#cbd5e1', Math.max(75, c.textOpacity - 8));
         if (line2Text) {
           ctx.fillText(line2Text, leftXBase, barCenterY + Math.round(6 * baseScale));
+          if (c.textOpacity > 0) {
+            const m = ctx.measureText(line2Text);
+            state.watermarkBounds.push({x: leftXBase - m.actualBoundingBoxLeft, y: barCenterY + Math.round(6 * baseScale) - m.actualBoundingBoxAscent, w: m.actualBoundingBoxLeft + m.actualBoundingBoxRight, h: m.actualBoundingBoxAscent + m.actualBoundingBoxDescent});
+          }
         }
         ctx.restore();
 
@@ -5812,6 +5907,10 @@ X.B(E,Y);return E}return J}())
         ctx.fillStyle = hexToRgba(c.textMainColor || '#f59e0b', c.textOpacity);
         if (line3Text) {
           ctx.fillText(line3Text, rightXBase, barCenterY - Math.round(4 * baseScale));
+          if (c.textOpacity > 0) {
+            const m = ctx.measureText(line3Text);
+            state.watermarkBounds.push({x: rightXBase - m.actualBoundingBoxLeft, y: barCenterY - Math.round(4 * baseScale) - m.actualBoundingBoxAscent, w: m.actualBoundingBoxLeft + m.actualBoundingBoxRight, h: m.actualBoundingBoxAscent + m.actualBoundingBoxDescent});
+          }
         }
 
         ctx.textBaseline = 'top';
@@ -5820,6 +5919,10 @@ X.B(E,Y);return E}return J}())
         ctx.fillStyle = hexToRgba(c.textSubColor || '#cbd5e1', Math.max(70, c.textOpacity - 12));
         if (line4Text) {
           ctx.fillText(line4Text, rightXBase, barCenterY + Math.round(6 * baseScale));
+          if (c.textOpacity > 0) {
+            const m = ctx.measureText(line4Text);
+            state.watermarkBounds.push({x: rightXBase - m.actualBoundingBoxLeft, y: barCenterY + Math.round(6 * baseScale) - m.actualBoundingBoxAscent, w: m.actualBoundingBoxLeft + m.actualBoundingBoxRight, h: m.actualBoundingBoxAscent + m.actualBoundingBoxDescent});
+          }
         }
         ctx.restore();
 
@@ -5907,6 +6010,8 @@ X.B(E,Y);return E}return J}())
       const boxLeft = Math.round(boxCenterX - blockW / 2);
       const boxTop = Math.round(boxCenterY - blockH / 2);
       const boxRight = boxLeft + blockW;
+      state.dragArea = {w: areaW, h: areaH};
+      if (c.textOpacity > 0 || logoW > 0 || c.bgOpacity > 0 || c.boxBorder) state.watermarkBounds = [{x: boxLeft, y: boxTop, w: blockW, h: blockH}];
 
       ctx.save();
 
@@ -6008,6 +6113,7 @@ X.B(E,Y);return E}return J}())
       const canvas = document.getElementById('watermark-canvas');
       const stage = document.getElementById('canvas-stage');
       if (!canvas || !stage || !canvas.width || !canvas.height) return;
+      syncWatermarkHitRegions();
 
       if (state.zoomMode === 'fit') {
         const pad = 28;
@@ -6719,21 +6825,23 @@ if __name__ == '__main__':
         });
       });
 
-      // Direct Canvas Dragging
+      // Only the rendered watermark regions suppress touch scrolling.
       const canvas = document.getElementById('watermark-canvas');
-      canvas.addEventListener('pointerdown', (e) => {
-        state.isDraggingWatermark = true;
-        state.dragStartX = e.clientX;
-        state.dragStartY = e.clientY;
-        canvas.setPointerCapture(e.pointerId);
+      const hitLayer = document.getElementById('watermark-hit-layer');
+      hitLayer.addEventListener('pointerdown', e => {
+        if (!e.target.classList.contains('watermark-hit-region') || !e.isPrimary || e.button !== 0 || state.exportBusy || !state.dragArea) return;
+        e.preventDefault();
+        state.isDraggingWatermark = true; state.dragPointerId = e.pointerId;
+        state.dragStartX = e.clientX; state.dragStartY = e.clientY;
+        hitLayer.setPointerCapture(e.pointerId);
       });
-      canvas.addEventListener('pointermove', (e) => {
-        if (!state.isDraggingWatermark) return;
+      hitLayer.addEventListener('pointermove', e => {
+        if (!state.isDraggingWatermark || e.pointerId !== state.dragPointerId || !state.dragArea) return;
+        e.preventDefault();
         const rect = canvas.getBoundingClientRect();
-        const dx = ((e.clientX - state.dragStartX) / rect.width) * 100;
-        const dy = ((e.clientY - state.dragStartY) / rect.height) * 100;
-        state.dragStartX = e.clientX;
-        state.dragStartY = e.clientY;
+        const dx = (e.clientX - state.dragStartX) * canvas.width / rect.width / state.dragArea.w * 100;
+        const dy = (e.clientY - state.dragStartY) * canvas.height / rect.height / state.dragArea.h * 100;
+        state.dragStartX = e.clientX; state.dragStartY = e.clientY;
         state.config.offsetX = Math.max(-48, Math.min(48, Number((state.config.offsetX + dx).toFixed(1))));
         state.config.offsetY = Math.max(-48, Math.min(48, Number((state.config.offsetY + dy).toFixed(1))));
         document.getElementById('slider-offset-x').value = state.config.offsetX;
@@ -6742,7 +6850,9 @@ if __name__ == '__main__':
         document.getElementById('val-offset-y').textContent = `${state.config.offsetY}%`;
         renderWatermarkCanvas();
       });
-      canvas.addEventListener('pointerup', () => { state.isDraggingWatermark = false; });
+      ['pointerup','pointercancel','lostpointercapture'].forEach(event => hitLayer.addEventListener(event, endWatermarkDrag));
+      window.addEventListener('blur', () => endWatermarkDrag());
+      document.getElementById('btn-clear-queue').addEventListener('click', clearQueue);
 
       // Sliders Binding
       const bindSlider = (id, valId, prop, unit = '') => {
