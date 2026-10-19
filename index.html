@@ -3928,7 +3928,7 @@ X.B(E,Y);return E}return J}())
             <div id="template-grid" class="grid grid-cols-3 gap-1.5 text-[11px]">
               <button type="button" data-template="python-script" class="tpl-btn p-2 rounded border border-amber-500 bg-amber-500/15 text-white text-left">
                 <div class="font-semibold">Python 描边风</div>
-                <div class="text-[10px] text-amber-300">参考图同款多行</div>
+                <div class="text-[10px] text-amber-300">多行文字描边</div>
               </button>
               <button type="button" data-template="python-box" class="tpl-btn p-2 rounded border border-slate-700 bg-studio-800 text-slate-200 text-left">
                 <div class="font-semibold">Python 底框风</div>
@@ -4228,7 +4228,7 @@ X.B(E,Y);return E}return J}())
           <div class="p-2.5 rounded-lg bg-studio-850 border border-slate-800 space-y-3">
             <span class="text-xs font-semibold text-slate-200 block">字体、字号与间距</span>
             <select id="select-font-family" class="w-full bg-studio-800 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white">
-              <option value="Inter, 'Noto Sans SC', sans-serif" selected>无衬线黑体 · Inter / 思源黑体 (Python 脚本推荐)</option>
+              <option value="Inter, 'Noto Sans SC', sans-serif" selected>无衬线黑体 · Inter / 思源黑体</option>
               <option value="'JetBrains Mono', 'Noto Sans SC', monospace">等宽工程体 · JetBrains Mono</option>
               <option value="'Playfair Display', 'Noto Serif SC', Georgia, serif">古典衬线体 · Playfair / 思源宋体</option>
               <option value="'Courier Prime', 'Noto Sans SC', monospace">复古胶片机 · Courier Prime</option>
@@ -5120,6 +5120,16 @@ X.B(E,Y);return E}return J}())
       });
     }
 
+    function syncArtistFallbackLabel() {
+      const item = state.queue[state.activeIndex];
+      const option = document.querySelector('[data-exif-line="Artist"] option[value="0"]');
+      if (!item || !option) return;
+      const copyrightLine = getKeyLineNumber('Copyright');
+      const usesArtist = copyrightLine > 0 &&
+        !String(item.exif.Copyright ?? '').trim() && String(item.exif.Artist ?? '').trim();
+      option.textContent = usesArtist ? `自动：第 ${copyrightLine} 行（版权为空）` : '不显示';
+    }
+
     // ==================== RENDER FULL EXIF TAG POOL ====================
     function renderExifPool() {
       const listEl = document.getElementById('exif-pool-list');
@@ -5170,10 +5180,13 @@ X.B(E,Y);return E}return J}())
         listEl.appendChild(row);
       });
 
+      syncArtistFallbackLabel();
+
       listEl.querySelectorAll('[data-exif-inp]').forEach(inp => {
         inp.addEventListener('input', (e) => {
           const k = inp.dataset.exifInp;
           item.exif[k] = e.target.value; (item.edits ||= {})[k] = e.target.value;
+          syncArtistFallbackLabel();
           renderLinesComposer();
           renderWatermarkCanvas();
         });
