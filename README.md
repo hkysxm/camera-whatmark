@@ -6,10 +6,9 @@
 
 在仓库 **Settings → Pages → Build and deployment** 中设置：
 
-- Source：**Deploy from a branch**
-- Branch：**main**，目录：**/ (root)**
+- Source：**GitHub Actions**
 
-保存后，等待 GitHub Pages 构建完成。默认网址：
+仓库的 `.github/workflows/pages.yml` 使用 Node.js 24 版 Actions，在推送到 `main` 时自动发布。首次切换 Source 后，可在 **Actions → Deploy GitHub Pages → Run workflow** 手动启动一次。默认网址：
 
 https://hkysxm.github.io/camera-whatmark/
 
