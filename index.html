@@ -4796,7 +4796,7 @@ X.B(E,Y);return E}return J}())
       // Multi-Line Row Configuration (Reference Python Script 4-line default!)
       lines: [
         { id: 1, keys: ['Model', 'LensModel'], scale: 100, bold: false },
-        { id: 2, keys: ['FocalLength', 'ExposureTime', 'FNumber', 'ISO', 'ExposureCompensation'], scale: 100, bold: false },
+        { id: 2, keys: ['FocalLengthIn35mmFormat', 'ExposureTime', 'FNumber', 'ISO', 'ExposureCompensation'], scale: 100, bold: false },
         { id: 3, keys: ['DateTimeOriginal'], scale: 96, bold: false },
         { id: 4, keys: ['Copyright'], scale: 96, bold: false }
       ],
@@ -4988,10 +4988,14 @@ X.B(E,Y);return E}return J}())
       const showLabel = state.config.showTagLabel;
       const parts = [];
       lineObj.keys.forEach(k => {
-        let val = exifDict[k];
-        if (val !== undefined && String(val).trim() !== '') {
+        let displayKey = k;
+        const hasValue = value => value != null && String(value).trim() !== '';
+        if (k === 'FocalLengthIn35mmFormat' && (!hasValue(exifDict[k]) || parseFloat(exifDict[k]) === 0)) displayKey = 'FocalLength';
+        if (k === 'Copyright' && !hasValue(exifDict[k])) displayKey = 'Artist';
+        let val = exifDict[displayKey];
+        if (hasValue(val)) {
           if (k === 'ExposureTime') val = formatExposureTime(val);
-          parts.push(showLabel ? `${escapeHtml(getCatalogLabel(k))}: ${String(val).trim()}` : String(val).trim());
+          parts.push(showLabel ? `${escapeHtml(getCatalogLabel(displayKey))}: ${String(val).trim()}` : String(val).trim());
         }
       });
       return parts.join(sep);
@@ -6857,7 +6861,7 @@ if __name__ == '__main__':
       document.getElementById('btn-reset-lines').addEventListener('click', () => {
         state.lines = [
           { id: 1, keys: ['Model', 'LensModel'], scale: 100, bold: false },
-          { id: 2, keys: ['FocalLength', 'ExposureTime', 'FNumber', 'ISO', 'ExposureCompensation'], scale: 100, bold: false },
+          { id: 2, keys: ['FocalLengthIn35mmFormat', 'ExposureTime', 'FNumber', 'ISO', 'ExposureCompensation'], scale: 100, bold: false },
           { id: 3, keys: ['DateTimeOriginal'], scale: 96, bold: false },
           { id: 4, keys: ['Copyright'], scale: 96, bold: false }
         ];
