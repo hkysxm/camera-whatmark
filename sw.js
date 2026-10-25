@@ -1,5 +1,5 @@
 // Bump VERSION when changing the PWA assets or cache strategy.
-const VERSION = 'v2';
+const VERSION = 'v3';
 // Scope-specific names avoid touching caches belonging to other GitHub Pages apps.
 const PREFIX = `optimark:${self.registration.scope}:`;
 const SHELL_CACHE = `${PREFIX}shell-${VERSION}`;
@@ -8,7 +8,7 @@ const appUrl = path => new URL(path, self.registration.scope).href;
 const INDEX_URL = appUrl('index.html');
 const TAILWIND_URL = 'https://cdn.tailwindcss.com/3.4.17';
 const HEIC_URL = 'https://cdn.jsdelivr.net/npm/heic-to@1.6.6/dist/iife/heic-to.js';
-const SHELL = ['index.html', 'manifest.webmanifest', 'pwa.js', 'queue-storage.js', 'icons/icon-192.png',
+const SHELL = ['index.html', 'manifest.webmanifest', 'pwa.js', 'queue-storage.js', 'saved-presets.js', 'icons/icon-192.png',
   'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'].map(appUrl);
 
 self.addEventListener('install', event => {
