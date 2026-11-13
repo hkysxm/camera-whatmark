@@ -3891,6 +3891,7 @@ X.B(E,Y);return E}return J}())
             <span id="queue-count-badge" class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-studio-800 text-amber-400">4</span>
           </div>
           <div class="flex items-center gap-1.5">
+            <button id="btn-photo-cache" type="button" disabled class="text-[11px] px-2 py-0.5 rounded bg-studio-800 text-amber-300 border border-slate-700 disabled:opacity-40">清除当前图片缓存</button>
             <button id="btn-clear-other-cache" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 text-slate-300 border border-slate-700">清除其他缓存</button>
             <button id="btn-clear-queue" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 text-slate-300 border border-slate-700">清空队列</button>
             <button id="btn-sync-all" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 hover:bg-studio-700 text-slate-300 border border-slate-700">
@@ -5290,6 +5291,11 @@ X.B(E,Y);return E}return J}())
     function renderFilmstrip() {
       const list = document.getElementById('filmstrip-list');
       document.getElementById('queue-count-badge').textContent = `${state.queue.length}`;
+      const selected = state.queue[state.activeIndex];
+      const cacheButton = document.getElementById('btn-photo-cache');
+      cacheButton.disabled = !selected;
+      cacheButton.textContent = selected?.persist === false ? '恢复当前图片缓存' : '清除当前图片缓存';
+      cacheButton.title = selected ? `${selected.name}：清除后本次仍可编辑，下次打开不恢复` : '请先选择照片';
       list.innerHTML = '';
 
       state.queue.forEach((item, idx) => {
@@ -5318,16 +5324,6 @@ X.B(E,Y);return E}return J}())
         remove.type = 'button'; remove.className = 'queue-remove'; remove.textContent = '×';
         remove.setAttribute('aria-label', `删除 ${item.name}`);
         remove.addEventListener('click', e => { e.stopPropagation(); removeQueueItem(idx); });
-        const cacheButton = document.createElement('button');
-        cacheButton.type = 'button'; cacheButton.className = 'text-[10px] px-1 text-amber-300 shrink-0';
-        cacheButton.textContent = item.persist === false ? '恢复缓存' : '清除此图缓存';
-        cacheButton.title = '清除后本次仍可编辑，下次打开不恢复此图';
-        cacheButton.addEventListener('click', async e => {
-          e.stopPropagation();
-          try { await queueStorage.setPhotoCached(item, item.persist === false); renderFilmstrip(); }
-          catch (error) { showToast(error.message, 'error'); }
-        });
-        card.appendChild(cacheButton);
         card.appendChild(remove);
         list.appendChild(card);
       });
@@ -6937,6 +6933,15 @@ if __name__ == '__main__':
       });
 
       // Upload & Export
+      document.getElementById('btn-photo-cache').addEventListener('click', async () => {
+        const item = state.queue[state.activeIndex];
+        if (!item || state.exportBusy || state.batchBusy) return;
+        const button = document.getElementById('btn-photo-cache');
+        button.disabled = true;
+        try { await queueStorage.setPhotoCached(item, item.persist === false); }
+        catch (error) { showToast(error.message, 'error'); }
+        finally { renderFilmstrip(); }
+      });
       document.getElementById('btn-clear-other-cache').addEventListener('click', async () => {
         if (!confirm('清除离线页面、字体和解码器缓存，保留列表照片、预设和设置。之后需要联网重新建立离线缓存，继续吗？')) return;
         try { await queueStorage.clearOtherCaches(); showToast('已清除其他缓存，队列照片、预设和设置已保留', 'success'); }
