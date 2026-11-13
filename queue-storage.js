@@ -16,7 +16,8 @@ const queueStorage = (() => {
 
   function capture() {
     const images = new Map();
-    const queue = state.queue.map(({ image, ...item }) => {
+    const savedItems = state.queue.filter(item => item.persist !== false);
+    const queue = savedItems.map(({ image, ...item }) => {
       const imageKey = `photo:${item.id}`;
       images.set(imageKey, image);
       return { ...item, imageKey };
@@ -27,7 +28,7 @@ const queueStorage = (() => {
       logoKey = logoKeys.get(state.customLogoImg);
       images.set(logoKey, state.customLogoImg);
     }
-    const signature = JSON.stringify({ schema: 1, queue, activeIndex: state.activeIndex,
+    const signature = JSON.stringify({ schema: 1, queue, activeIndex: savedItems.length ? Math.max(0, savedItems.indexOf(state.queue[state.activeIndex])) : -1,
       config: state.config, lines: state.lines, catalog: state.catalog, logoKey });
     return { data: JSON.parse(signature), signature, images };
   }
@@ -201,6 +202,42 @@ const queueStorage = (() => {
     clearTimeout(timer); timer = setTimeout(flush, 150);
   }
 
+  async function setPhotoCached(item, cached) {
+    if (!ready || suspended) throw new Error('当前本地存储不可用，无法修改图片缓存');
+    const previous = item.persist;
+    item.persist = cached;
+    if (!await flush()) { item.persist = previous; throw new Error('缓存修改失败，请检查本地保存提示'); }
+    encodedImages.delete(item.image);
+    showToast(cached ? '已恢复此图缓存' : '已清除此图缓存；本次仍可编辑，下次打开不恢复', 'success');
+  }
+
+  async function clearOtherCaches() {
+    if (!await flush()) throw new Error('请先解决队列保存问题，再清理其他缓存');
+    // Use the stored snapshot in the same transaction, including a concurrent tab's newer state.
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(['session', 'images'], 'readwrite');
+      const images = tx.objectStore('images');
+      const request = tx.objectStore('session').get('current');
+      request.onsuccess = () => {
+        const data = request.result;
+        if (!data) { tx.abort(); return; }
+        const retained = new Set(data.queue.map(item => item.imageKey));
+        if (data.logoKey) retained.add(data.logoKey);
+        const cursor = images.openCursor();
+        cursor.onsuccess = () => {
+          if (!cursor.result) return;
+          if (!retained.has(cursor.result.key)) cursor.result.delete();
+          cursor.result.continue();
+        };
+      };
+      tx.oncomplete = resolve; tx.onabort = () => reject(tx.error || new Error('图片缓存清理失败'));
+    });
+    if ('caches' in window) {
+      const prefix = `optimark:${new URL('./', location.href).href}:`;
+      await Promise.all((await caches.keys()).filter(key => key.startsWith(prefix)).map(key => caches.delete(key)));
+    }
+  }
+
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
   window.addEventListener('pagehide', () => flush());
   window.addEventListener('beforeunload', event => {
@@ -208,5 +245,5 @@ const queueStorage = (() => {
       flush(); event.preventDefault(); event.returnValue = '';
     }
   });
-  return { initialize, schedule, flush };
+  return { initialize, schedule, flush, setPhotoCached, clearOtherCaches };
 })();

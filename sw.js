@@ -1,5 +1,5 @@
 // Bump VERSION when changing the PWA assets or cache strategy.
-const VERSION = 'v3';
+const VERSION = 'v4';
 // Scope-specific names avoid touching caches belonging to other GitHub Pages apps.
 const PREFIX = `optimark:${self.registration.scope}:`;
 const SHELL_CACHE = `${PREFIX}shell-${VERSION}`;

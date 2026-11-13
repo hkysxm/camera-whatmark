@@ -3891,12 +3891,13 @@ X.B(E,Y);return E}return J}())
             <span id="queue-count-badge" class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-studio-800 text-amber-400">4</span>
           </div>
           <div class="flex items-center gap-1.5">
+            <button id="btn-clear-other-cache" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 text-slate-300 border border-slate-700">清除其他缓存</button>
             <button id="btn-clear-queue" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 text-slate-300 border border-slate-700">清空队列</button>
             <button id="btn-sync-all" type="button" class="text-[11px] px-2 py-0.5 rounded bg-studio-800 hover:bg-studio-700 text-slate-300 border border-slate-700">
               同步版权和自定义文本
             </button>
             <button id="btn-batch-export" type="button" class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30">
-              批量导出全部
+              批量导出 ZIP
             </button>
           </div>
         </div>
@@ -4441,7 +4442,7 @@ X.B(E,Y);return E}return J}())
           <!-- Image Color Develop -->
           <div class="p-2.5 rounded-lg bg-studio-850 border border-slate-800 space-y-2.5">
             <div class="flex items-center justify-between">
-              <span class="text-xs font-semibold text-slate-200">画面显影调色</span>
+              <span class="text-xs font-semibold text-slate-200">画面显影调色（当前照片）</span>
               <button id="btn-reset-develop" type="button" class="text-[11px] text-amber-400 hover:underline">重置</button>
             </div>
             <p id="develop-support-note" class="text-xs text-amber-300"></p><select id="select-color-profile" class="w-full bg-studio-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white">
@@ -4944,10 +4945,29 @@ X.B(E,Y);return E}return J}())
       selectQueueItem(0);
     }
 
+    const DEVELOP_DEFAULTS = { colorProfile: 'standard', exposure: 0, contrast: 0, saturation: 0, warmth: 0 };
+    function currentDevelop() {
+      return Object.fromEntries(Object.keys(DEVELOP_DEFAULTS).map(key => [key, state.config[key]]));
+    }
+    function initializePhotoDevelop() {
+      // Existing queues inherit their previous global look once during migration.
+      for (const item of state.queue) if (!item.develop) item.develop = currentDevelop();
+    }
+    function syncPhotoDevelopControls() {
+      document.getElementById('select-color-profile').value = state.config.colorProfile;
+      for (const [suffix, key] of [['exposure','exposure'],['contrast','contrast'],['sat','saturation'],['warmth','warmth']]) {
+        document.getElementById(`slider-dev-${suffix}`).value = state.config[key];
+        document.getElementById(`val-dev-${suffix}`).textContent = state.config[key];
+      }
+    }
+
     function selectQueueItem(index) {
       if (index < 0 || index >= state.queue.length) return;
       endWatermarkDrag();
+      initializePhotoDevelop();
       state.activeIndex = index;
+      Object.assign(state.config, state.queue[index].develop);
+      syncPhotoDevelopControls();
       setQueueAvailability(true);
       const item = state.queue[index];
 
@@ -5298,6 +5318,16 @@ X.B(E,Y);return E}return J}())
         remove.type = 'button'; remove.className = 'queue-remove'; remove.textContent = '×';
         remove.setAttribute('aria-label', `删除 ${item.name}`);
         remove.addEventListener('click', e => { e.stopPropagation(); removeQueueItem(idx); });
+        const cacheButton = document.createElement('button');
+        cacheButton.type = 'button'; cacheButton.className = 'text-[10px] px-1 text-amber-300 shrink-0';
+        cacheButton.textContent = item.persist === false ? '恢复缓存' : '清除此图缓存';
+        cacheButton.title = '清除后本次仍可编辑，下次打开不恢复此图';
+        cacheButton.addEventListener('click', async e => {
+          e.stopPropagation();
+          try { await queueStorage.setPhotoCached(item, item.persist === false); renderFilmstrip(); }
+          catch (error) { showToast(error.message, 'error'); }
+        });
+        card.appendChild(cacheButton);
         card.appendChild(remove);
         list.appendChild(card);
       });
@@ -5577,6 +5607,8 @@ X.B(E,Y);return E}return J}())
     }
 
     async function handleFilesUpload(fileList) {
+      state.importsInFlight = (state.importsInFlight || 0) + 1;
+      try {
       if (!fileList || fileList.length === 0) return;
 
       let imported = 0;
@@ -5698,6 +5730,7 @@ X.B(E,Y);return E}return J}())
         state.queue.push({
           id: 'upload-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
           name: file.name,
+          develop: { ...DEVELOP_DEFAULTS },
           rawFormat: isRaw ? `${ext} RAW（可用预览）` : `${ext}`,
           image: loadedImg,
           thumbnail: imageDataUrl(loadedImg, 160),
@@ -5714,6 +5747,7 @@ X.B(E,Y);return E}return J}())
         } catch (err) { showToast(`${file.name}：${err.message}`, 'error'); }
       }
       return imported;
+      } finally { state.importsInFlight--; }
     }
 
     function generateTestRawFile() {
@@ -5828,6 +5862,8 @@ X.B(E,Y);return E}return J}())
     }
 
     function renderWatermarkCanvas(targetScale = 1) {
+      initializePhotoDevelop();
+      if (state.queue[state.activeIndex]) state.queue[state.activeIndex].develop = currentDevelop();
       if (typeof queueStorage !== 'undefined') queueStorage.schedule();
       const item = state.queue[state.activeIndex];
       state.watermarkBounds = []; state.dragArea = null;
@@ -6480,7 +6516,7 @@ X.B(E,Y);return E}return J}())
       }
       return {Format:format,Width:width,Height:height,MetadataStatus:format==='jpeg'?'已回读并比对 EXIF / XMP':'该格式仅导出像素，不保留 EXIF / XMP',ParsedMetadata:parsed};
     }
-    async function exportCurrentImage(showVerification = true) {
+    async function exportCurrentImage(showVerification = true, downloadResult = true) {
       const item=state.queue[state.activeIndex]; if(!item || state.exportBusy) return null;
       if(state.config.exportFormat==='heic') {showToast('此浏览器版本不支持 HEIC 编码，请选择 JPEG、PNG 或 WebP。','error');return null;}
       state.exportBusy=true;const previousCompare=state.compareOriginal;
@@ -6505,17 +6541,73 @@ X.B(E,Y);return E}return J}())
         const report=await verifyExport(blob,expectedExif,text,canvas.width,canvas.height);
         const name=`${item.name.replace(/\.[^.]+$/,'')}_watermarked.${ext}`;
         report.File=name;report.Bytes=blob.size;
-        downloadBlob(blob,name);
+        if (downloadResult) downloadBlob(blob,name);
         if(showVerification) {
           box.classList.remove('hidden');
           document.getElementById('verify-status').textContent=c.exportFormat==='jpeg'?'文件及元数据校验通过':'图像校验通过；此格式未保留元数据';
           document.getElementById('verify-file-size').textContent=`${name} (${(blob.size/1024).toFixed(1)} KB)`;
           document.getElementById('verify-exif-json').textContent=JSON.stringify(report,null,2);
         }
-        showToast(c.exportFormat==='jpeg'?`已导出并回读校验 ${name}`:`已导出 ${name}；PNG/WebP 不保留元数据`,'success');
-        return report;
+        if (downloadResult) showToast(c.exportFormat==='jpeg'?`已导出并回读校验 ${name}`:`已导出 ${name}；PNG/WebP 不保留元数据`,'success');
+        return downloadResult ? report : { report, blob, name };
       } catch(err) {showToast(`导出失败：${err.message}`,'error');return null;}
-      finally {state.compareOriginal=previousCompare;renderWatermarkCanvas(1);document.body.inert=false;state.exportBusy=false;}
+      finally {state.compareOriginal=previousCompare;renderWatermarkCanvas(1);document.body.inert=!!state.batchBusy;state.exportBusy=false;}
+    }
+
+    async function exportQueueZip() {
+      if (state.exportBusy || state.batchBusy || !state.queue.length) return;
+      if (state.importsInFlight) { showToast('请等待照片导入完成后再批量导出', 'info'); return; }
+      const originalIndex = state.activeIndex;
+      const total = state.queue.length, files = [], failed = [];
+      state.batchBusy = true; document.body.inert = true;
+      const button = document.getElementById('btn-batch-export'), label = button.textContent;
+      try {
+        for (let i = 0; i < total; i++) {
+          button.textContent = `正在导出 ${i + 1}/${total}`;
+          selectQueueItem(i);
+          const result = await exportCurrentImage(false, false);
+          if (result) files.push({ name: `${String(i + 1).padStart(3, '0')}_${result.name}`, blob: result.blob });
+          else failed.push(state.queue[i].name);
+        }
+        if (!files.length) throw new Error('没有图片导出成功');
+        if (failed.length) files.push({ name: '导出失败清单.txt', blob: new Blob([failed.join('\n')], {type:'text/plain'}) });
+        downloadBlob(await buildPhotoZip(files), 'OptiMark_photos.zip');
+        showToast(`已打包 ${total - failed.length}/${total} 张图片${failed.length ? '，失败文件见 ZIP 内清单' : ''}`, failed.length ? 'info' : 'success');
+      } catch (error) { showToast(`批量导出失败：${error.message}`, 'error'); }
+      finally {
+        selectQueueItem(originalIndex);
+        state.batchBusy = false; document.body.inert = false; button.textContent = label;
+      }
+    }
+
+    async function buildPhotoZip(files) {
+      // ZIP STORE: images are already compressed; avoid re-encoding their verified bytes.
+      if (files.length > 65535) throw new Error('图片数量超出 ZIP 支持范围');
+      const table = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) { let c = i; for (let b = 0; b < 8; b++) c = (c >>> 1) ^ ((c & 1) ? 0xedb88320 : 0); table[i] = c; }
+      const chunks = [], central = []; let offset = 0, centralSize = 0;
+      for (const file of files) {
+        const name = new TextEncoder().encode(file.name.replace(/[\\/]/g, '_'));
+        const bytes = new Uint8Array(await file.blob.arrayBuffer());
+        let crc = 0xffffffff;
+        for (const byte of bytes) crc = table[(crc ^ byte) & 255] ^ (crc >>> 8);
+        crc = (crc ^ 0xffffffff) >>> 0;
+        const header = new Uint8Array(30), h = new DataView(header.buffer);
+        h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x800, true);
+        h.setUint16(12, 33, true); h.setUint32(14, crc, true);
+        h.setUint32(18, bytes.length, true); h.setUint32(22, bytes.length, true); h.setUint16(26, name.length, true);
+        const entry = new Uint8Array(46), e = new DataView(entry.buffer);
+        e.setUint32(0, 0x02014b50, true); e.setUint16(4, 20, true); e.setUint16(6, 20, true);
+        e.setUint16(8, 0x800, true); e.setUint16(14, 33, true); e.setUint32(16, crc, true);
+        e.setUint32(20, bytes.length, true); e.setUint32(24, bytes.length, true); e.setUint16(28, name.length, true); e.setUint32(42, offset, true);
+        chunks.push(header, name, file.blob); central.push(entry, name);
+        offset += 30 + name.length + bytes.length; centralSize += 46 + name.length;
+        if (offset + centralSize + 22 >= 0xffffffff || name.length > 65535) throw new Error('批量文件超过 4 GB，请分批导出');
+      }
+      const end = new Uint8Array(22), e = new DataView(end.buffer);
+      e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
+      e.setUint32(12, centralSize, true); e.setUint32(16, offset, true);
+      return new Blob([...chunks, ...central, end], {type:'application/zip'});
     }
 
     function exportPythonWatermarkScript() {
@@ -6845,6 +6937,11 @@ if __name__ == '__main__':
       });
 
       // Upload & Export
+      document.getElementById('btn-clear-other-cache').addEventListener('click', async () => {
+        if (!confirm('清除离线页面、字体和解码器缓存，保留列表照片、预设和设置。之后需要联网重新建立离线缓存，继续吗？')) return;
+        try { await queueStorage.clearOtherCaches(); showToast('已清除其他缓存，队列照片、预设和设置已保留', 'success'); }
+        catch (error) { showToast(`清理失败：${error.message}`, 'error'); }
+      });
       const fileInput = document.getElementById('file-upload-input');
       document.getElementById('btn-upload-trigger').addEventListener('click', () => fileInput.click());
       document.getElementById('btn-exif-upload').addEventListener('click', () => fileInput.click());
@@ -6862,16 +6959,7 @@ if __name__ == '__main__':
       document.getElementById('btn-export-main').addEventListener('click', () => exportCurrentImage(true));
       document.getElementById('btn-export-verify').addEventListener('click', () => exportCurrentImage(true));
 
-      document.getElementById('btn-batch-export').addEventListener('click', async () => {
-        const origIdx = state.activeIndex;
-        let count = 0;
-        for (let i = 0; i < state.queue.length; i++) {
-          selectQueueItem(i);
-          if (await exportCurrentImage(false)) count++;
-        }
-        selectQueueItem(origIdx);
-        showToast(`批量导出完成：${count}/${state.queue.length} 张成功`, 'success');
-      });
+      document.getElementById('btn-batch-export').addEventListener('click', exportQueueZip);
 
       document.getElementById('btn-sync-all').addEventListener('click', () => {
         const curItem = state.queue[state.activeIndex];
@@ -7319,11 +7407,11 @@ if __name__ == '__main__':
         else document.getElementById('queue-storage-status').textContent = '自动保存不可用，请通过网站访问';
       } finally { document.body.inert = false; }
       bindAllEvents();
-      if (restored) refreshQueueAfterRemoval(); else initSamples();
+      if (restored) { initializePhotoDevelop(); refreshQueueAfterRemoval(); } else initSamples();
       syncUiControlsFromConfig();
       if (!('filter' in document.createElement('canvas').getContext('2d'))) {
         ['slider-dev-exposure','slider-dev-contrast','slider-dev-sat','slider-dev-warmth','select-color-profile'].forEach(id => {document.getElementById(id).disabled=true;});
-        document.getElementById('develop-support-note').textContent = '当前浏览器不支持显影调色，已禁用相关控件；请使用新版 Chromium。';
+        document.getElementById('develop-support-note').textContent = '当前浏览器不支持显影调色（当前照片），已禁用相关控件；请使用新版 Chromium。';
       }
       document.fonts.ready.then(() => renderWatermarkCanvas());
     });
