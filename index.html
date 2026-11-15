@@ -3841,6 +3841,7 @@ X.B(E,Y);return E}return J}())
             <span class="text-[11px] text-slate-400">主色:</span>
             <div id="dominant-swatches" class="flex items-center gap-1"></div>
           </div>
+          <button id="btn-crop" type="button" class="px-2 py-1 rounded bg-studio-800 text-amber-300 border border-slate-700 text-[11px]">裁切照片</button>
           <button id="btn-toggle-grid" type="button" class="px-2 py-1 rounded bg-studio-800 hover:bg-studio-700 text-slate-300 border border-slate-700 text-[11px]">
             参考线
           </button>
@@ -4605,6 +4606,25 @@ X.B(E,Y);return E}return J}())
   <!-- Toast Container -->
   <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-1.5 pointer-events-none"></div>
 
+  <dialog id="crop-dialog" aria-labelledby="crop-title" style="background:#11131a;color:#e2e8f0;border:1px solid #475569;border-radius:10px;padding:16px;width:min(960px,95vw);max-height:92vh;overflow:auto;">
+    <h2 id="crop-title" style="font-size:16px;font-weight:600;">裁切照片</h2>
+    <p id="crop-file" style="font-size:12px;overflow-wrap:anywhere;"></p>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0;">
+      <label>比例 <select id="crop-ratio" style="background:#1e2230;padding:6px;border:1px solid #475569;border-radius:4px;">
+        <option value="0">自由</option><option value="1">1:1</option><option value="1.5">3:2</option><option value="0.6666666666666666">2:3</option><option value="1.3333333333333333">4:3</option><option value="0.75">3:4</option><option value="1.7777777777777777">16:9</option><option value="0.5625">9:16</option>
+      </select></label>
+      <span id="crop-size" style="font-size:12px;"></span>
+      <button id="crop-reset" type="button" style="padding:8px;border:1px solid #475569;border-radius:4px;">重置裁切</button>
+    </div>
+    <div style="display:flex;justify-content:center;"><canvas id="crop-canvas" aria-label="裁切区域：拖动内部移动，拖动角点调整大小" style="max-width:100%;max-height:55vh;width:auto;height:auto;touch-action:none;cursor:crosshair;"></canvas></div>
+    <p style="font-size:12px;color:#94a3b8;margin:12px 0;">拖动角点调整范围，拖动框内移动，框外拖动重新选区。批量按相对范围匹配，固定比例保持不变。重置后点击应用可恢复完整照片。</p>
+    <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
+      <button id="crop-cancel" type="button" style="padding:8px 12px;border:1px solid #475569;border-radius:4px;">取消</button>
+      <button id="crop-apply-all" type="button" style="padding:8px 12px;border:1px solid #f59e0b;border-radius:4px;">应用到全部照片</button>
+      <button id="crop-apply" type="button" style="padding:8px 12px;background:#f59e0b;color:#11131a;border-radius:4px;">应用到当前照片</button>
+    </div>
+  </dialog>
+
   <script>    const APP_HTML = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
 
     function escapeHtml(value) {
@@ -4946,6 +4966,121 @@ X.B(E,Y);return E}return J}())
       selectQueueItem(0);
     }
 
+    function getPhotoCrop(item) {
+      const width = item.image.naturalWidth, height = item.image.naturalHeight;
+      const c = item.crop || { x: 0, y: 0, w: 1, h: 1 };
+      const x = Math.max(0, Math.min(width - 1, Math.round(c.x * width)));
+      const y = Math.max(0, Math.min(height - 1, Math.round(c.y * height)));
+      return { x, y, w: Math.max(1, Math.min(width - x, Math.round(c.w * width))),
+        h: Math.max(1, Math.min(height - y, Math.round(c.h * height))) };
+    }
+
+    const photoCropEditor = (() => {
+      let item, draft, gesture;
+      const full = () => ({ x: 0, y: 0, w: 1, h: 1 });
+      const clamp = (v, low, high) => Math.max(low, Math.min(high, v));
+      const dialog = () => document.getElementById('crop-dialog');
+      const canvas = () => document.getElementById('crop-canvas');
+      const ratio = () => Number(document.getElementById('crop-ratio').value);
+      function fit(rect, image, aspect) {
+        const r = { ...rect };
+        if (aspect) {
+          const normalized = aspect * image.naturalHeight / image.naturalWidth;
+          if (r.w / r.h > normalized) { const w = r.h * normalized; r.x += (r.w - w) / 2; r.w = w; }
+          else { const h = r.w / normalized; r.y += (r.h - h) / 2; r.h = h; }
+        }
+        return r;
+      }
+      function paint() {
+        if (!item) return;
+        const c = canvas(), ctx = c.getContext('2d'), w = c.width, h = c.height;
+        ctx.clearRect(0, 0, w, h); ctx.drawImage(item.image, 0, 0, w, h);
+        const x = draft.x * w, y = draft.y * h, cw = draft.w * w, ch = draft.h * h;
+        ctx.fillStyle = 'rgba(0,0,0,.6)';
+        ctx.fillRect(0, 0, w, y); ctx.fillRect(0, y + ch, w, h - y - ch);
+        ctx.fillRect(0, y, x, ch); ctx.fillRect(x + cw, y, w - x - cw, ch);
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.strokeRect(x, y, cw, ch);
+        ctx.strokeStyle = 'rgba(255,255,255,.45)'; ctx.lineWidth = 1;
+        for (let i = 1; i <= 2; i++) {
+          ctx.beginPath();ctx.moveTo(x+cw*i/3,y);ctx.lineTo(x+cw*i/3,y+ch);ctx.stroke();
+          ctx.beginPath();ctx.moveTo(x,y+ch*i/3);ctx.lineTo(x+cw,y+ch*i/3);ctx.stroke();
+        }
+        ctx.fillStyle = '#f59e0b';
+        for (const [a,b] of [[x,y],[x+cw,y],[x,y+ch],[x+cw,y+ch]]) ctx.fillRect(a-5,b-5,10,10);
+        const pixels = getPhotoCrop({ image: item.image, crop: draft });
+        document.getElementById('crop-size').textContent = `${pixels.w} × ${pixels.h} 像素`;
+      }
+      function point(event) {
+        const box = canvas().getBoundingClientRect();
+        return { x: clamp((event.clientX-box.left)/box.width,0,1), y: clamp((event.clientY-box.top)/box.height,0,1) };
+      }
+      function down(event) {
+        if (gesture || event.button !== 0) return;
+        const p = point(event), r = draft, box = canvas().getBoundingClientRect();
+        const corners = [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]];
+        const corner = corners.findIndex(([x,y]) => Math.hypot((x-p.x)*box.width,(y-p.y)*box.height)<=18);
+        const inside = p.x>=r.x && p.x<=r.x+r.w && p.y>=r.y && p.y<=r.y+r.h;
+        gesture = { id:event.pointerId, start:p, before:{...r}, mode:corner>=0?'resize':inside?'move':'draw',
+          anchor: corner>=0 ? {x:corners[3-corner][0],y:corners[3-corner][1]} : p };
+        canvas().setPointerCapture(event.pointerId); event.preventDefault();
+      }
+      function move(event) {
+        if (!gesture || gesture.id !== event.pointerId) return;
+        const p = point(event), g = gesture;
+        if (g.mode === 'move') {
+          draft = {...g.before, x:clamp(g.before.x+p.x-g.start.x,0,1-g.before.w), y:clamp(g.before.y+p.y-g.start.y,0,1-g.before.h)};
+        } else {
+          const a = g.anchor, sx = p.x>=a.x?1:-1, sy = p.y>=a.y?1:-1;
+          let w = Math.abs(p.x-a.x), h = Math.abs(p.y-a.y);
+          if (ratio()) {
+            const r = ratio()*item.image.naturalHeight/item.image.naturalWidth;
+            w = Math.min(Math.max(w,h*r),sx>0?1-a.x:a.x,(sy>0?1-a.y:a.y)*r); h = w/r;
+          }
+          draft = { x:sx>0?a.x:a.x-w, y:sy>0?a.y:a.y-h, w, h };
+        }
+        paint(); event.preventDefault();
+      }
+      function end(event) {
+        if (!gesture || gesture.id!==event.pointerId) return;
+        if (event.type==='pointercancel' || draft.w*item.image.naturalWidth<1 || draft.h*item.image.naturalHeight<1) draft=gesture.before;
+        const id=gesture.id;gesture=null;
+        if(canvas().hasPointerCapture(id))canvas().releasePointerCapture(id);
+        paint();
+      }
+      function open() {
+        if (state.exportBusy || state.batchBusy || !state.queue[state.activeIndex]) return;
+        item=state.queue[state.activeIndex];draft={...(item.crop||full())};gesture=null;
+        document.getElementById('crop-ratio').value=String(item.crop?.aspect||0);
+        const scale=Math.min(1,900/item.image.naturalWidth,540/item.image.naturalHeight);
+        canvas().width=Math.max(1,Math.round(item.image.naturalWidth*scale));
+        canvas().height=Math.max(1,Math.round(item.image.naturalHeight*scale));
+        document.getElementById('crop-file').textContent=item.name;
+        dialog().showModal();paint();
+      }
+      function apply(all) {
+        if (!item || !state.queue.includes(item) || gesture) return;
+        const targets=all?state.queue:[item];
+        for (const target of targets) {
+          const rect=fit(draft,target.image,ratio());
+          target.crop = rect.x===0&&rect.y===0&&rect.w===1&&rect.h===1 ? null : {...rect, aspect:ratio()};
+        }
+        dialog().close();selectQueueItem(state.activeIndex);
+        showToast(all?'已将裁切应用到全部照片':'已应用当前照片裁切','success');
+      }
+      function bind() {
+        document.getElementById('btn-crop').addEventListener('click',open);
+        canvas().addEventListener('pointerdown',down);canvas().addEventListener('pointermove',move);
+        for(const type of ['pointerup','pointercancel','lostpointercapture'])canvas().addEventListener(type,end);
+        document.getElementById('crop-ratio').addEventListener('change',()=>{draft=fit(full(),item.image,ratio());paint();});
+        document.getElementById('crop-reset').addEventListener('click',()=>{draft=full();document.getElementById('crop-ratio').value='0';paint();});
+        document.getElementById('crop-cancel').addEventListener('click',()=>dialog().close());
+        document.getElementById('crop-apply').addEventListener('click',()=>apply(false));
+        document.getElementById('crop-apply-all').addEventListener('click',()=>apply(true));
+        dialog().addEventListener('close',()=>{gesture=null;item=null;});
+      }
+      return {bind};
+    })();
+
     const DEVELOP_DEFAULTS = { colorProfile: 'standard', exposure: 0, contrast: 0, saturation: 0, warmth: 0 };
     function currentDevelop() {
       return Object.fromEntries(Object.keys(DEVELOP_DEFAULTS).map(key => [key, state.config[key]]));
@@ -4974,9 +5109,8 @@ X.B(E,Y);return E}return J}())
 
       document.getElementById('badge-file-format').textContent = item.rawFormat;
       document.getElementById('label-file-name').textContent = item.name;
-      const w = item.origW || item.image.naturalWidth || 1600;
-      const h = item.origH || item.image.naturalHeight || 1067;
-      document.getElementById('label-dimensions').textContent = `${w} × ${h}（可用像素）`;
+      const {w, h} = getPhotoCrop(item);
+      document.getElementById('label-dimensions').textContent = `${w} × ${h}（${item.crop ? '裁切像素' : '可用像素'}）`;
       const populatedCount = Object.values(item.exif).filter(v => v !== undefined && v !== '').length;
       document.getElementById('label-exif-count').textContent = `${populatedCount} 项 EXIF`;
 
@@ -5332,7 +5466,7 @@ X.B(E,Y);return E}return J}())
     function setQueueAvailability(available) {
       document.getElementById('canvas-wrapper').style.display = available ? '' : 'none';
       document.getElementById('queue-empty-message').classList.toggle('hidden', available);
-      for (const id of ['btn-export-main','btn-export-verify','btn-export-py','btn-batch-export','btn-sync-all','btn-clear-queue','btn-compare-orig']) document.getElementById(id).disabled = !available;
+      for (const id of ['btn-crop','btn-export-main','btn-export-verify','btn-export-py','btn-batch-export','btn-sync-all','btn-clear-queue','btn-compare-orig']) document.getElementById(id).disabled = !available;
       document.getElementById('export-verify-box').classList.add('hidden');
     }
 
@@ -5874,13 +6008,14 @@ X.B(E,Y);return E}return J}())
       const img = item.image;
       const c = state.config;
 
-      const srcW = Math.round((img.naturalWidth || 1600) * targetScale);
-      const srcH = Math.round((img.naturalHeight || 1067) * targetScale);
+      const crop = getPhotoCrop(item);
+      const srcW = Math.max(1, Math.round(crop.w * targetScale));
+      const srcH = Math.max(1, Math.round(crop.h * targetScale));
 
       if (state.compareOriginal) {
-        canvas.width = srcW;
-        canvas.height = srcH;
-        ctx.drawImage(img, 0, 0, srcW, srcH);
+        canvas.width = Math.round(img.naturalWidth * targetScale);
+        canvas.height = Math.round(img.naturalHeight * targetScale);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         updateZoomStyle();
         return;
       }
@@ -6010,7 +6145,7 @@ X.B(E,Y);return E}return J}())
       }
 
       applyRawDevelopFilter(ctx, c);
-      ctx.drawImage(img, photoX, photoY, srcW, srcH);
+      ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, photoX, photoY, srcW, srcH);
       ctx.restore();
 
       // Photo inner stroke border if enabled
@@ -6343,8 +6478,8 @@ X.B(E,Y);return E}return J}())
     function updateEstimatedSize(canvasW, canvasH) {
       const item = state.queue[state.activeIndex];
       const c = state.config;
-      const imgW = (item && item.image && item.image.naturalWidth) || 1600;
-      const imgH = (item && item.image && item.image.naturalHeight) || 1067;
+      const cropped = item?.image ? getPhotoCrop(item) : { w: 1600, h: 1067 };
+      const imgW = cropped.w, imgH = cropped.h;
       const origW = imgW;
       const origH = imgH;
 
@@ -6611,7 +6746,7 @@ X.B(E,Y);return E}return J}())
       const b64=text=>{const bytes=new TextEncoder().encode(text);let raw='';for(let i=0;i<bytes.length;i+=8192)raw+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(raw);};
       const overrides={...(item.edits || {})};
       for(const [key,value] of Object.entries(item.exif)) if(/^Custom\d+$/.test(key) || ['Artist','Copyright'].includes(key)) overrides[key]=value;
-      const snapshot={config:state.config,lines:state.lines,catalog:state.catalog,overrides,logo:state.customLogoImg?imageDataUrl(state.customLogoImg):null};
+      const snapshot={config:state.config,lines:state.lines,catalog:state.catalog,overrides,crop:item.crop||null,logo:state.customLogoImg?imageDataUrl(state.customLogoImg):null};
       const pyCode=`#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """OptiMark: reuse the page renderer, including frame, logo and line settings.
@@ -6654,6 +6789,7 @@ def main():
         page.evaluate("""async cfg => {
             state.config=cfg.config;state.lines=cfg.lines;state.catalog=cfg.catalog;
             Object.assign(state.queue[state.activeIndex].exif,cfg.overrides);
+            state.queue[state.activeIndex].crop=cfg.crop||null;
             if(cfg.logo)state.customLogoImg=await loadImage(cfg.logo);
             state.compareOriginal=false;await document.fonts.ready;renderWatermarkCanvas();
         }""", cfg)
@@ -6887,6 +7023,7 @@ if __name__ == '__main__':
 
     // ==================== EVENT BINDINGS ====================
     function bindAllEvents() {
+      photoCropEditor.bind();
       // Main View Tabs
       const views = {
         studio: document.getElementById('view-studio'),
